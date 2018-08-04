@@ -1,5 +1,3 @@
-#include<include/SoftwareRenderer.h>  
-      
 #include <cutils/memory.h>  
       
 #include <unistd.h>  
@@ -17,9 +15,29 @@
 #include <android/native_window.h>  
 #include <window.h>
 
+#define LOG_TAG "showYUV"
+
 using namespace android;
 
-int main(void){  
+void convertYUV420PToYV12(unsigned char *i, int size)
+{
+    int u_size = size/4;
+    unsigned char buff[u_size];
+    // copy U to buff
+    memcpy(buff, i+size, u_size);
+    // replace U with V
+    memcpy(i+size, i+size+u_size, u_size);
+    // copy buff to V
+    memcpy(i+size+u_size, buff, u_size);
+}
+
+int main(int argc, char **argv) {
+	if (argc < 3) {
+		printf("example:");
+		printf("\t showYUV filePath fileFormat");
+		return -1;
+	}
+
 	// set up the thread-pool  
 	sp<ProcessState> proc(ProcessState::self());  
 	ProcessState::self()->startThreadPool();  
@@ -31,25 +49,36 @@ int main(void){
 	DisplayInfo dinfo;  
 	// get the display width, height and etc. info
 	status_t status = SurfaceComposerClient::getDisplayInfo(dtoken, &dinfo);  
-	printf("w=%d,h=%d,xdpi=%f,ydpi=%f,fps=%f,ds=%f\n",   
+	ALOGD("w=%d,h=%d,xdpi=%f,ydpi=%f,fps=%f,ds=%f\n",
 			dinfo.w, dinfo.h, dinfo.xdpi, dinfo.ydpi, dinfo.fps, dinfo.density);  
 	if (status)  
 		return -1;  
+
 	// create SurfaceControl
 	sp<SurfaceControl> surfaceControl = client->createSurface(String8("showYUV"),
 							dinfo.w, dinfo.h, PIXEL_FORMAT_RGBA_8888, 0);
                   
     /*************************get yuv data from file;****************************************/            
+	const char *path = argv[1];
+
 	int width,height;  
-	width = 352;  
-	height = 288;  
+	if (strcmp(argv[2], "cif") == 0) {
+		width = 352;
+		height = 288;
+	} else if (strcmp(argv[2], "qcif") == 0) {
+		width = 176;
+		height = 144;
+	} else {
+		printf("unsupported format, exit now\n");
+		return -1;
+	}
+
 	int size = width * height * 3/2;  
 	unsigned char *data = new unsigned char[size];  
-	const char *path = "/system/usr/yuv_352_288.yuv";
 
 	FILE *fp = fopen(path,"rb");  
 	if (fp == NULL) {
-		printf("read %s fail !\n", path);  
+		ALOGE("read %s fail !\n", path);
 		return -errno;
 	}
     /*********************config surface*****************************************************/  
@@ -68,22 +97,23 @@ int main(void){
 
 	status_t result = native_window_api_connect(nWindow, NATIVE_WINDOW_API_CPU);
 	if (result != NO_ERROR) {
-		printf("ERROR: failed to do native_window_api_connect: %d", result);
+		ALOGE("ERROR: failed to do native_window_api_connect: %d", result);
 		return result;
 	}
 
 	result = native_window_set_buffers_format(nWindow, HAL_PIXEL_FORMAT_YV12);
 	if (result != NO_ERROR) {
-		printf("ERROR: failed to do native_window_set_buffers_format: %d", result);
+		ALOGE("ERROR: failed to do native_window_set_buffers_format: %d", result);
 		return result;
 	}
 
+	ALOGD("start to operate GraphicBuffer");
 	do {
 		// Transfer GraphicBuffer using ANW function
 		int fenceFd = -1;
 		int err = window->dequeueBuffer(window.get(), &anb, &fenceFd);
 		if (err != 0) {
-			printf("ERROR: dequeueBuffer returned error: %d\n", err);
+			ALOGE("ERROR: dequeueBuffer returned error: %d\n", err);
 			return -1;
 		}
 
@@ -101,26 +131,27 @@ int main(void){
 
         err = buffer->lock(GRALLOC_USAGE_SW_WRITE_OFTEN, (void **)(&img));
         if (err != 0) {
-            printf("ERROR: lock failed\n");
+            ALOGE("ERROR: lock failed\n");
             return -1;
         }
 
         fread(data, size, 1, fp);
+        convertYUV420PToYV12(data, width * height);
         memcpy(img, data, size);
 
         err = buffer->unlock();
         if (err != 0) {
-            printf("ERROR: unlock failed\n");
+            ALOGE("ERROR: unlock failed\n");
             return -1;
         }
 
         if ((err = window->queueBuffer(window.get(), anb, -1)) != 0) {
-            printf("ERROR: queueBuffer returned error: %d\n", err);
+            ALOGE("ERROR: queueBuffer returned error: %d\n", err);
             return -2;
         } 
 	} while (feof(fp) == 0);
 
-	printf("close yuv file\n");
+	ALOGD("close yuv file\n");
 	fclose(fp);
 
 	if (anb != NULL) {
@@ -130,7 +161,7 @@ int main(void){
 
 	result = native_window_api_disconnect(nWindow, NATIVE_WINDOW_API_CPU);
 	if (result != NO_ERROR) {
-		printf("ERROR: failed to do native_window_api_disconnect: %d", result);
+		ALOGE("ERROR: failed to do native_window_api_disconnect: %d", result);
 		return result;
 	}
 
