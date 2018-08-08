@@ -32,9 +32,9 @@ void convertYUV420PToYV12(unsigned char *i, int size)
 }
 
 int main(int argc, char **argv) {
-	if (argc < 3) {
+	if (argc < 5) {
 		printf("example:");
-		printf("\t showYUV filePath fileFormat");
+		printf("\t showYUV filePath fileFormat WP*HP Layer");
 		return -1;
 	}
 
@@ -73,6 +73,12 @@ int main(int argc, char **argv) {
 		return -1;
 	}
 
+	int wp = 0;
+	int hp = 0;
+	sscanf(argv[3], "%d*%d", &wp, &hp);
+	int layer = atoi(argv[4]);
+	printf("wp: %d, hp: %d, layer: %d\n", wp, hp, layer);
+
 	int size = width * height * 3/2;  
 	unsigned char *data = new unsigned char[size];  
 
@@ -83,15 +89,15 @@ int main(int argc, char **argv) {
 	}
     /*********************config surface*****************************************************/  
 	SurfaceComposerClient::openGlobalTransaction();  
-	surfaceControl->setLayer(100000);// set Z position
-	surfaceControl->setPosition(100, 100);// set the display position, offset from left-up
+	surfaceControl->setLayer(layer);// set Z position
+	surfaceControl->setPosition(wp, hp);// set the display position, offset from left-up
 	surfaceControl->setSize(width, height);// set the display size
 	SurfaceComposerClient::closeGlobalTransaction();  
 	sp<Surface> surface = surfaceControl->getSurface();  
 
     /****************************************************************************************/    
 	unsigned int *pBufferAddr;
-	ANativeWindowBuffer *anb;
+	ANativeWindowBuffer *anb = NULL;
 	sp<ANativeWindow> window(surface);
 	ANativeWindow *nWindow = surface.get();
 
@@ -109,6 +115,7 @@ int main(int argc, char **argv) {
 
 	ALOGD("start to operate GraphicBuffer");
 	do {
+#ifdef USE_GRAPHICBUFFER
 		// Transfer GraphicBuffer using ANW function
 		int fenceFd = -1;
 		int err = window->dequeueBuffer(window.get(), &anb, &fenceFd);
@@ -134,11 +141,20 @@ int main(int argc, char **argv) {
             ALOGE("ERROR: lock failed\n");
             return -1;
         }
+#else
+        ANativeWindow_Buffer outBuffer;
+        if (NO_ERROR != surface->lock(&outBuffer, NULL)) {
+            printf("error with lock Surface outBuffer\n");
+            return -1;
+        }
+        uint8_t* img = reinterpret_cast<uint8_t*>(outBuffer.bits);
+#endif
 
         fread(data, size, 1, fp);
         convertYUV420PToYV12(data, width * height);
         memcpy(img, data, size);
 
+#ifdef USE_GRAPHICBUFFER
         err = buffer->unlock();
         if (err != 0) {
             ALOGE("ERROR: unlock failed\n");
@@ -148,7 +164,13 @@ int main(int argc, char **argv) {
         if ((err = window->queueBuffer(window.get(), anb, -1)) != 0) {
             ALOGE("ERROR: queueBuffer returned error: %d\n", err);
             return -2;
-        } 
+        }
+#else
+        if (NO_ERROR != surface->unlockAndPost()) {
+            printf("error with unlockAndPost\n");
+            return -3;
+        }
+#endif
 	} while (feof(fp) == 0);
 
 	ALOGD("close yuv file\n");
